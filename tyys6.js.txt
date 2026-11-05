@@ -1,0 +1,161 @@
+var rule = {
+    title: '天涯影视',
+    host: 'https://tyys6.app',
+    // 分类分页：已确认格式 {tid}-{pg}.html
+    url: '/tyystype/fyclass-fypage.html',
+    // 搜索分页：已确认格式 {关键词}----------{pg}---.html
+    searchUrl: '/filmsearch/**----------fypage---.html',
+    searchable: 2,
+    quickSearch: 1,
+    filterable: 1,   // 站点支持筛选，改为1
+    filter_url: '{{fl.tid}}-{{fl.year}}---{{fl.class}}--------fypage---',
+    // 简化版筛选（如你的drpy版本filter_url格式不同，可先设filterable:0不用筛选）
+    filter: {
+        'dianshiju': [
+            {'key':'class','name':'类型','value':[
+                {'n':'古装','v':'古装'},{'n':'战争','v':'战争'},{'n':'喜剧','v':'喜剧'},
+                {'n':'动作','v':'动作'},{'n':'奇幻','v':'奇幻'},{'n':'剧情','v':'剧情'}
+            ]},
+            {'key':'year','name':'年份','value':[
+                {'n':'2025','v':'2025'},{'n':'2024','v':'2024'},{'n':'2023','v':'2023'},{'n':'2020','v':'2020'}
+            ]}
+        ]
+    },
+
+    class_name: '电影&电视剧&综艺&动漫&短剧',
+    class_url: 'dianying&dianshiju&zongyi&dongman&duanju',
+
+    // 列表选择器（搜索页/分类页结构一致）
+    一级: 'div.box-item;a.item-link&&href;a.item-link&&title;a.item-link&&title;.movie-name&&Text',
+    搜索: 'div.box-item;a.item-link&&href;a.item-link&&title;a.item-link&&title;.movie-name&&Text',
+
+    二级: '*',
+    play_parse: true,
+    lazy: `js:
+        let html = request(input);
+        let m = html.match(/var player_aaaa\\s*=\\s*(\\{[\\s\\S]*?\\})<\\/script>/);
+        let url = '';
+        if (m) { try { url = JSON.parse(m[1]).url; } catch(e) {} }
+        if (url) {
+            input = { parse: 0, url: url, header: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://tyys6.app/' } };
+        } else {
+            input = { parse: 1, url: input };
+        }
+    `,
+}
+
+// ===== 函数式版本（推荐，可选其一） =====
+var UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_16 like Mac OS X) AppleWebKit/605.1.15';
+
+function req(url) {
+    return request(url, { headers: { 'User-Agent': UA, 'Referer': 'https://tyys6.app/' } }).content;
+}
+
+function home(filter) {
+    return JSON.stringify({
+        class: [
+            { type_id: 'dianying', type_name: '电影' },
+            { type_id: 'dianshiju', type_name: '电视剧' },
+            { type_id: 'zongyi', type_name: '综艺' },
+            { type_id: 'dongman', type_name: '动漫' },
+            { type_id: 'duanju', type_name: '短剧' }
+        ]
+    });
+}
+
+function homeVod() { return JSON.stringify({ list: [] }); }
+
+// 列表解析（搜索页与分类页通用）
+// 注意：搜索页 img alt 和部分 title 是占位符 [searchlist:name]，
+//       标题优先取 .movie-name 文本，回退用 a.item-link 的 title
+function parseList(html) {
+    let list = [];
+    let blocks = html.split('<div class="box-item">');
+    blocks.shift();
+    for (let b of blocks) {
+        let m = b.match(/href="(\/tyysdetail\/\d+\.html)"/);
+        if (!m) continue;
+        let item = { vod_id: m[1].replace('/tyysdetail/', '').replace('.html', '') };
+        // 标题：优先 .movie-name 内嵌文本
+        let t = b.match(/class="movie-name"[^>]*>([^<]+)</);
+        if (!t) t = b.match(/class="item-link"[^>]*title="([^"]+)"/);
+        item.vod_name = t ? t[1].trim() : '';
+        // 封面
+        let p = b.match(/<img[^>]*src="([^"]+)"/);
+        item.vod_pic = p ? p[1] : '';
+        // 备注："更新第06集"/"更新全集" 等（item-link 内 a 的尾部文本）
+        let r = b.match(/<img[^>]*>\s*([^<]+?)\s*<\/a>/);
+        item.vod_remarks = r ? r[1].trim() : '';
+        list.push(item);
+    }
+    return list;
+}
+
+function category(tid, pg, filter, ext) {
+    // 已确认：/tyystype/{tid}-{pg}.html
+    let html = req(`https://tyys6.app/tyystype/${tid}-${pg}.html`);
+    return JSON.stringify({ list: parseList(html) });
+}
+
+function detail(id) {
+    let html = req(`https://tyys6.app/tyysdetail/${id}.html`);
+    let vod = {
+        vod_id: id, vod_name: '', vod_pic: '', type_name: '', vod_remarks: '',
+        vod_year: '', vod_area: '', vod_actor: '', vod_director: '',
+        vod_content: '', vod_play_from: '天涯影视', vod_play_url: ''
+    };
+    let meta = function (prop) {
+        let m = html.match(new RegExp('property="og:' + prop + '"\\s+content="([^"]*)"'));
+        return m ? m[1] : '';
+    };
+    vod.vod_name = meta('title');
+    vod.vod_pic = meta('image');
+    vod.type_name = meta('video:class');
+    vod.vod_area = meta('video:area');
+    vod.vod_actor = meta('video:actor');
+    vod.vod_director = meta('video:director');
+    let ym = html.match(/年份<\/span><\/li>\s*<li class="li_r"><a[^>]*>(\d{4})<\/a>/);
+    if (ym) vod.vod_year = ym[1];
+    let dm = html.match(/class="summary">([\s\S]*?)<\/p>/);
+    if (dm) vod.vod_content = dm[1].replace(/\s+/g, ' ').trim();
+    let rm = html.match(/状态<\/span><\/li>\s*<li class="li_r"><span class="color">([^<]+)<\/span>/);
+    if (rm) vod.vod_remarks = rm[1];
+
+    // 选集（详情页 .play-episodes 区块，自动兼容多线路）
+    let eps = [];
+    let re = /href="(\/tyysplay\/\d+-\d+-\d+\.html)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+    let mm, sidMap = {};
+    while ((mm = re.exec(html)) !== null) {
+        let sid = mm[1].match(/-(\d+)-\d+\.html/)[1];
+        if (!sidMap[sid]) { sidMap[sid] = eps.length; eps.push([]); }
+        eps[sidMap[sid]].push(mm[2].trim() + '$https://tyys6.app' + mm[1]);
+    }
+    // 多线路时用 $$$$ 分隔
+    vod.vod_play_url = eps.map(function (e) { return e.join('#'); }).join('$$$$');
+    return JSON.stringify({ list: [vod] });
+}
+
+function play(flag, id, flags) {
+    let html = req(id);
+    // 已确认：player_aaaa 明文（encrypt:0），url 为 m3u8 直链
+    let m = html.match(/var player_aaaa\s*=\s*(\{[\s\S]*?\})<\/script>/);
+    if (m) {
+        try {
+            let d = JSON.parse(m[1]);
+            if (d.url) {
+                return JSON.stringify({
+                    parse: 0,
+                    url: d.url,
+                    header: { 'User-Agent': UA, 'Referer': 'https://tyys6.app/' }
+                });
+            }
+        } catch (e) {}
+    }
+    return JSON.stringify({ parse: 1, url: id });
+}
+
+function search(wd, quick) {
+    // 已确认：/filmsearch/{encodeURIComponent(wd)}----------{pg}---.html
+    let html = req(`https://tyys6.app/filmsearch/${encodeURIComponent(wd)}----------1---.html`);
+    return JSON.stringify({ list: parseList(html) });
+}
